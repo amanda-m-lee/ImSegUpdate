@@ -46,6 +46,8 @@ class clumpFind:
         self.data   =   np.nan_to_num(data)
         self.sn     =   np.nan_to_num(sn)
         self.hdr    =   hdr
+
+        #print(hdr)
         
         if wt is None:
             self.wt     =  (np.divide(self.sn, self.data, out=np.zeros_like(self.sn), where=self.data !=0)**2. )
@@ -53,9 +55,11 @@ class clumpFind:
             self.wt = np.nan_to_num(wt)
             
         if w is None:
-            self.w   = WCS(self.hdr) ## WCS information
+            #self.w   = WCS(self.hdr) ## WCS information
+            self.w   = WCS(self.hdr).sub(2) ## WCS information 
         else:
-            self.w = w
+            #self.w = w
+            self.w = w.sub(2)
 
                         
     def background(self):
@@ -95,7 +99,7 @@ class clumpFind:
         
         '''
         #mask data before source detection
-        #   - only choose souces with: weights above coverage limit*median 
+        #   - only choose sources with: weights above coverage limit*median 
         #   - sn above sn threshold
         #   - where data != 0
         mask0   = self.wt > 0
@@ -169,7 +173,6 @@ class clumpFind:
         snn = np.copy(self.sn)
         snn[mask]   =   0
 
-        # -- AL note: how come did not also just use background() here like before for noise?
         noise       =   np.divide(datt, snn, out=np.zeros_like(datt), where=snn !=0)
         noise[noise == 0] = np.nan
         mednoise    =   np.nanmedian(noise)
@@ -180,7 +183,7 @@ class clumpFind:
         
         #try deblending. 
         segm_deblend = deblend_sources(datt, byte_data, segm, npixels=npixels, contrast=contrast)  ### manually updated version of deblend_sources
-            
+        
         try:
             print('deblending complete')
             return segm_deblend, segm_deblend.data
@@ -195,9 +198,9 @@ class clumpFind:
         #get the rotation and cdelt of the image
         rot, cdelt = getRot(self.hdr)
         if edgecut == True:
-            near = 70./3600. / cdelt[1] # -- AL Q: what is 70 for? 
+            near = 70./3600. / cdelt[1] # -- AL: what is 70 for? 
         else:
-            near = 8./3600./cdelt[1] # AL Q: to reject cands. within 8 arcsec of coverage?   
+            near = 8./3600./cdelt[1] # AL: to reject cands. within 8 arcsec of coverage?   
         return near
     
 
@@ -252,10 +255,7 @@ class clumpFind:
 
         #get array of background subtracted pixel values within segment
         meann = [np.mean(i) for i in cat.values]
-        # sum of the noise (signal/sn) in each segment
-
-        # -- AL Q: how come squared the sum of noise in each segment?
-        
+        # sum of the noise (signal/sn) in each segment        
         noisesum = [np.sum((cat.values[i] / cat2.values[i])**2.) for i in np.arange(len(cat.values))]
 
         #x, y, ra, dec values for each segment 
@@ -268,31 +268,28 @@ class clumpFind:
         msns    = cat2.max_value  
         # signal at maximum signal to noise
         msigs   = self.data[np.int_(cat2.maxval_ypos.value), np.int_(cat2.maxval_xpos.value )] 
-
         # area of segment in degrees^2
         areas = cat.area.value*(cdelt[1]**2. )
         
         # average signal in segment
         sigs_i = np.array([np.mean(i) for i in cat.values]) * areas/(1.1331*(fwhm/3600.)**2. )
-        
+        print('FWHM being used for sigs_I of each segment: {}'.format(fwhm))
         # average noise in segment
         noise = np.sqrt(noisesum)/np.sqrt(1.1331*(fwhm/3600./cdelt[1])**2)
+        print('FWHM being used for noise_I of each segment: {}'.format(fwhm))
         #average S/N
-        sns = sigs_i/noise  
+        sns = sigs_i/noise
 
         #half power signal, noise, sn 
         #finding all the values greater than half the maximum S/N
         whp =[cat[ind].values > 0.5*self.data[np.int_(cat2[ind].maxval_ypos.value), np.int_(cat2[ind].maxval_xpos.value )] for ind in np.arange(len(cat.values)) ]
 
 
-        # ------- Debugging with Grant ---------- 
+        # AL: Debugging
+        # -------------
         #breakpoint()
-        
         #print([i[1] for i in cat.coords])
-
         #print(cat.to_table())
-        
-        
         # finding x and y coordinates of each segment 
         #xhp0 = np.array([i[1] for i in cat.coords])  -- removed np.array() 
         #yhp0 = np.array([i[0] for i in cat.coords]) 
@@ -307,7 +304,6 @@ class clumpFind:
         yhp = [yhp0[ind][whp[ind]] for ind in np.arange(len(whp))]
 
         # find average center x/y coordinate of half power
-
         # -- AL note: looks like flux weighted hp coords. 
         xchp = [np.sum(self.data[yhp[ind], xhp[ind]] * xhp[ind]) / np.sum(self.data[yhp[ind], xhp[ind]]) for ind in np.arange(len(xhp)) ]
         ychp = [np.sum(self.data[yhp[ind], xhp[ind]] * yhp[ind]) / np.sum(self.data[yhp[ind], xhp[ind]]) for ind in np.arange(len(xhp)) ]
@@ -326,8 +322,7 @@ class clumpFind:
         mask2 = [ mask[int(np.min(yhp0[ind])-near):int(np.max(yhp0[ind])+near+1), int(np.min(xhp0[ind])-near):int(np.max(xhp0[ind])+near+1)] for ind in np.arange(len(xhp0))]
         
         #give each segment 1/0 if it is near the edge or not.
-        # -- AL note: this comment should be reversed. 1 is good, 0 is bad=near edge
-        
+        # -- AL note: the comment above should be reversed. 1 is good, 0 is bad=near edge
         maskbit = []
         for i in np.arange(len(mask2)):
             summ = np.sum(mask2[i]) # -- AL: mask2 only has values of 1's or 0's
@@ -347,22 +342,9 @@ class clumpFind:
             temp = kwargs['temp']
             temp_hdr = kwargs['temp_hdr']
 
-            ## use my interpolated temperature map 
             temp = fits.getdata(temp)
-
-            # this is just for WCS information. I set the header to be the same as coldens
-            # (for my interpolated temp map)
             temp_hdr = fits.getheader(temp_hdr)
 
-            '''
-            ## AL edit since temperature is part of multi-ext file 
-            hdu = fits.open(temp)
-            temp = hdu['TEMP'].data
-            temp_hdr = hdu['COLDEN'].header ## somehow temp map does not have WCS info
-                                            ## i'm going to assume WCS info is same as coldens
-                                            ## map... 
-            '''
-            
             temp_wcs = WCS(temp_hdr)
             avg_temp = []
             for ind in np.arange(len(xhp0)):
@@ -374,7 +356,7 @@ class clumpFind:
                     dec_in.append(dec2)
                 xxx, yyy = temp_wcs.wcs_world2pix(ra_in, dec_in, 0)
                 avg_temp.append(np.median(temp[np.int_(yyy),np.int_(xxx)]) )
-                
+            
             d = {'id':cat.id,'ra': tra, 'dec':tdec, 'max_sn':msns, 'max_sig':msigs, 'sn':sns, 'sig':sigs_i, 'area':areas, 'maskbit': maskbit, 'hparea':hpareas, 'hpra':hpra, 'hpdec':hpdec, 'temp':np.array(avg_temp), 'fwhm_maj': fwhm_major, 'fwhm_min': fwhm_minor}
             df = pd.DataFrame(data=d)
 #            
@@ -410,7 +392,8 @@ class clumpFind:
             d = self.sourceProperties(segm_deblend)
         
         df.to_csv(outbase+'/source_properties.csv', index=False)
-    
+
+            
     def plotClumps(self, segm_deblend, source, outbase):
         '''
         plot clumps and original image
@@ -433,16 +416,20 @@ class clumpFind:
 
         interval = ZScaleInterval()
         vmin, vmax = interval.get_limits(self.data)
-      
         plt.close()
         fig = plt.figure(figsize=(10,6))
         ax1 = plt.subplot(121,projection=self.w)
         ax1.imshow(self.data, cmap='Greys_r', vmin=vmin, vmax=vmax)
         ax1.set_title('Data:' + source)
 
+
+        # - amanda added
+        outline = SegmentationImage(segm_deblend).outline_segments() 
+        
         
         ## silly method to make an outline around each segment to show divisons.  divisions are now a pixel width with value = 0
         im = SegmentationImage(segm_deblend).outline_segments() #makes pixel width outline with the same label as the segment.  everything but outline have a value = 0
+        
         im[im > 0 ] = -10000.  # makes all the outlines a negative number.  Since no labels are negative, you will never have to worry about accidently overlapping with a core label
         im2 = im + segm_deblend  #add the original segmentation image to this new outline image.  All outlines have value -10000, everything else is 0, so you preserve the original labels except at the outlines.
         im2[im2 < 0] = 0.  # make all the outlines 0, the same as the background
@@ -459,10 +446,49 @@ class clumpFind:
         plt.show()
         plt.pause(5)
         plt.close()
+
+        ''' 
+
+        # ------------------ Amanda Check each step above for one core
+        plt.subplot(3,1,1)
+        plt.title('Segmentation image')
+        plt.imshow(segm_deblend, origin = 'lower')
+        plt.colorbar()
+        #plt.xlim(1340, 1380)
+        #plt.ylim(1517, 1542)
         
+        plt.subplot(3,1,2)
+        plt.title('Outline from Photutils')
+        plt.imshow(im, origin = 'lower')
+        plt.colorbar()
+        #plt.xlim(1340, 1380)
+        #plt.ylim(1517, 1542)
         
+        plt.subplot(3,1,3)
+        plt.title('Final blobprint')
+        plt.imshow(outline_image, origin = 'lower')
+        plt.colorbar()
+        #plt.xlim(1340, 1380)
+        #plt.ylim(1517, 1542)
+
+        plt.show()
+
+        fits.writeto(outbase+'/segmentationimage.fits', segm_deblend, overwrite=True)
+        fits.writeto(outbase+'/segmentationoutline.fits', im, overwrite=True)
+        '''
+
+        #return outline_image
+
         
-        return outline_image
+        # -- AL: return the blobprints with zeroed outline, segmentation image without anything
+        #    zeroed, and the outline image of each blob
+
+        # -- outline_image only includes the outlines of the blobs
+        # -- segm_deblend is the segmentation image (full blobs)
+        # -- outline (carried over from old code) is segm_deblend - outline_image 
+        
+        return outline_image, segm_deblend, outline 
+        
         
     
     

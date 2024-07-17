@@ -35,9 +35,9 @@ def getRot(hdr):
 
     if ((cd[1,0] == 0) & (cd[0,1] == 0)): #Unrotated coordinates?
         
-        # cd by construction is a 2x2 matrix:
-        # labeling indices, cd = [ [(0,0) (0,1)],
-        #                          [(1,0) (1,1)]]
+        # Amanda note: cd by construction is a 2x2 matrix:
+        #              labeling indices, cd = [ [(0,0) (0,1)],
+        #                                      [(1,0) (1,1)]]
         
         rot = 0.
         rot2 = 0.

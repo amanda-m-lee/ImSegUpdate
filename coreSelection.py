@@ -32,8 +32,10 @@ class coreSelection:
         (default: 0.75)
     '''
     
-    mincut=-1.25  # -- could you explain how this max dilution threshold was chosen again? 
-    minsn=3  
+    mincut=-1.25  
+    
+    minsn=3
+    
     gth=0.75
       
     def __init__(self, outbase, wavelength, pcdist, coldens, pickle_file, noise_pickle_file=None):
@@ -103,16 +105,6 @@ class coreSelection:
             header of coldens fits files
         
         '''
-        '''
-        ## AL edit (since column density / temp maps are in multi-ext fitfiles now)
-        print(self.coldens)
-        hdu = fits.open(self.coldens)
-
-        im = hdu['COLDEN'].data
-        hdr = hdu['COLDEN'].header
-        '''
-
-        ## now using my interpolated column density map, so can use old code: 
     
         im  =   fits.getdata(self.coldens)
         hdr =   fits.getheader(self.coldens)
@@ -180,9 +172,10 @@ class coreSelection:
                 #if (xx1[i] > sz[0]) or (xx1[i] < 0) or (yy1[i] < 0) or (yy1[i] > sz[1]):
                     #xx1[i] = 0
                     #yy1[i] = 0 
+
         X = np.stack((yy1,xx1), axis=-1)
         ind1 = np.ravel_multi_index(X.T,np.array([sz[0], sz[1]]))
-        #determines were there is a good core in both core and noise maps
+        #determines where there is a good core in both core and noise maps
         w   = blob_info['maskbit']   == 1
         #w[ind1 == 0] = False
 
@@ -199,15 +192,28 @@ class coreSelection:
         im2 = im.reshape(-1)
         
         #making a 2D histogram of the S/N and number density ratio calcuated above between (0, 1.9) and (-2, 0.4)
-        tmp, x,y = np.histogram2d(np.log10(blob_info['sn'][w]), np.log10(im2[np.int_(ind1[w])]*dn_to_nh2/(1e21)*15)-np.log10(blob_info['sig'][w]*massconvg[w]/(blob_info['area'][w]*(np.pi/180.*self.pcdist)**2)), range=[[0, 1.9],[-2, 0.4]],density=False, bins=[20,25])
+
+        xmin = 0 
+        xmax = 1.0 
+
+        ymin = -2 
+        ymax = 0.4 
+
+        xbins = 20 
+        ybins = 25 
+        
+        tmp, x,y = np.histogram2d(np.log10(blob_info['sn'][w]), np.log10(im2[np.int_(ind1[w])]*dn_to_nh2/(1e21)*15)-np.log10(blob_info['sig'][w]*massconvg[w]/(blob_info['area'][w]*(np.pi/180.*self.pcdist)**2)), range=[[xmin, xmax],[ymin, ymax]],density=False, bins=[xbins,ybins])
         
         xp = np.log10(blob_info['sn']) #log10(S/N of good cores) / 0.1 - determining S/N of good cores
         #calculating column density of Herschel / number density of mm at good cores
         #going into the flattened image and finding the values of the indices of good cores; taking the flux of the good cores and multiplying the mass conversion / area * distance
+
+        # -- Amanda note on this conversion:
+        # 1 Av = 1E21 cm^-2 and 1 Av ~ 15 Msun/pc^2
+        # "yp" is really the conversion of the Herschel map (in cm^-2) to Msun*pc^-2 
         yp = ((np.log10(im2[np.int_(ind1)]*dn_to_nh2/1e21*15)) - (np.log10(blob_info['sig']*massconvg/(blob_info['area']*(np.pi/180.*self.pcdist)**2))))
         
-        
-        return tmp, xp,yp
+        return tmp, xp,yp, xbins, ybins # amanda is adding xbins,ybins to test binning of 2D hist
     
         
     def NH2(self, blob_info, fwhm_beam):
@@ -256,7 +262,9 @@ class coreSelection:
         mass = (blob_info['sig']*massconvg)*1.989e33
         dist = (self.pcdist*u.pc).to(u.cm)
         m_hydrogen = 1.67e-24*u.g
-        mu = 2.3  # -- AL note: Betti+21 says took mu=2.8 (same as reference) but here it is 2.3
+        #mu = 2.3  #--Amanda note: Betti+21 says took mu=2.8 but here it is 2.3        
+        mu = 2.8   # use 2.8 instead 
+        
         beam_SA = blob_info['area'] * (np.pi/180.)**2. 
         
         NH2_cores = ((mass / (dist**2. * beam_SA * mu* m_hydrogen))) # cm^-2
@@ -273,7 +281,7 @@ class coreSelection:
     
     def size(self, hparea, fwhm_beam):    
         # calculate fwhm deconvolved corrected size
-        #hparea = np.array(hparea)
+
         #-- convert hparea from deg2 to arcsec2
         hparea = np.array(hparea) * (3600**2) 
         ##print(hparea)
@@ -282,7 +290,8 @@ class coreSelection:
         hpbw = fwhm_beam#* (self.pcdist/206265.)  #pc
         ###print(hpbw)
         size_cores = np.sqrt(fwhm**2. - hpbw**2.)*(self.pcdist/206265.) # --in parsecs
-        
+
+        ## -- Amanda testing 
         ##print(fwhm**2 - hpbw**2) # --> these were all negatives, hparea is in deg2 not arcsec2
         ##print(size_cores) # --> all nans; after fix, still some nans (but those are not final cores)
                           # --> I guess those cores are < size of the aztec beam 
@@ -307,17 +316,19 @@ class coreSelection:
         
         good_blobs   = blob_info['maskbit'][blob_info['maskbit']   == 1]
         print('number of blobs found: ', len(good_blobs))
-        
-        tmp1, xp, yp = self.findNH2ratio(blob_info)
 
-        # -- again, doing stuff to the bin edges
+
+        # -- amanda is adding xbins, ybins to test binning of 2D hist 
+        tmp1, xp, yp, xbins, ybins = self.findNH2ratio(blob_info)
+
+        # doing stuff to bin edges? 
         xp /= 0.1
         yp = (yp+2)/0.1
         
         # creating a good 2d surface map of the good S/N cores and number densities
         tempgood = np.copy(tmp1)
         #saying for any value in 2D hist of good cores that are less than 1---make them 1
-        # -- why would any value in 2D hist be < 1 if it's a histogram (counting?) 
+        # -- why would any value in 2D hist be < 1 if it's a histogram (i.e., counting)?
         tempgood[tempgood < 1] = 1
 
         #open the noise pickle file
@@ -327,16 +338,18 @@ class coreSelection:
             print('number of noise blobs found: ', len(good_noise_blobs))
         
             #find the column density and histogram of noise blobs
-            tmp2, xnp, ynp = self.findNH2ratio(noise_blob_info)
+
+            # amanda is adding xbins, ybins to test binning of 2D hist
+            tmp2, xnp, ynp, xbins, ybins = self.findNH2ratio(noise_blob_info)
             xnp /= 0.1
             ynp = (ynp+2)/0.1
             # create goodmap
 
-            # -- so... np.unique(noise_blob_info['numnoise'])[0] would be just 99,  
+            # -- AL: np.unique(noise_blob_info['numnoise'])[0] would be just 99,  
             # if 99 bloblist_noise*.pkl files are included in the final total bloblist_noise file.
             # then, tmp2/tot_number_noise_included_from_realizations is just
             # average histogram of sn vs. column density ratio across those 99 noise files
-            # and then taking tmp2/tempgood is rlly just the ratio between
+            # and then tmp2/tempgood is just the ratio between
             # (2dhist of SN vs. NH2ratio from noise) / (2dhist of SN vs. NH2 ratio from data)
             # then we take 1 - (ratio) to get a goodmap
             goodmap = (1-((tmp2)/np.unique(noise_blob_info['numnoise'])[0])/tempgood)
@@ -344,8 +357,11 @@ class coreSelection:
             ##print(np.unique(noise_blob_info['numnoise'])[0])
             
             #interpolate over the surface map just created and find the value in the surface at the location of the good (S/N, number density) found above
-            goodY = np.arange(20)
-            goodX = np.arange(25)
+
+            #goodY = np.arange(20)
+            goodY = np.arange(xbins)
+            #goodX = np.arange(25)
+            goodX = np.arange(ybins)
             f = interpolate.interp2d(goodX,goodY, goodmap, fill_value=1)
 
             interpolate_noise = [f(ynp.values[i], xnp.values[i])[0] for i in np.arange(len(xnp))]
@@ -359,11 +375,10 @@ class coreSelection:
             #these are the indices of the "official" cores that are said to be cores and not noise
 
 
-            # -- so, if the interpolated noise is basically just a regridded form of
+            # -- Amanda: so, if the interpolated noise is basically just a regridded form of
             # 1 - (ratio between noise/data 2d histograms of sn vs. coldens_ratio)
             # which means if noise is only 0.25x of flux 2dhist (from data), 
-            # it is considered a good core??
-            # and this is all for the false core detection, then? 
+            # it is considered a good core, and this is all for the false core detection 
             noise_blob_info['wng'] = np.where((noise_blob_info['maskbit'] == 1) &
                             (noise_blob_info['interpolate_noise']>= self.gth) & 
                             (noise_blob_info['sn'] >= self.minsn) & 
@@ -380,26 +395,32 @@ class coreSelection:
             #   - minsn: minimum s/n threshold = sn of good cores must be greater than this threshold
             #   - mincut: minimum column density ratio threshold = the ratio of herschel or mm of good cores must be above this threshold
             #these are the indices of the "official" cores that are said to be cores and not noise
+            
             blob_info['wg'] = np.where((blob_info['maskbit'] == 1) & 
                                 (blob_info['interpolate_flux'] >= self.gth)& 
                                 (blob_info['sn'] >= self.minsn) & 
                                 ((yp * 0.1) - 2. >= self.mincut)
                                 , 1,0)
+
+
             # boolean mask of "official" cores where 1 = official cores
             good = blob_info['wg'] == 1
             ng = len(blob_info['wg'][good])
         
-        
         else:
             goodmap = tempgood
+
             blob_info['wg'] = np.where((blob_info['maskbit'] == 1) & 
                                 (blob_info['sn'] >= self.minsn) & 
                                 ((yp * 0.1) - 2. >= self.mincut)
                                 , 1,0)
+
+
             # boolean mask of "official" cores where 1 = official cores
             good = blob_info['wg'] == 1
             ng = len(blob_info['wg'][good])
-        
+
+            
         print('number of candidate cores: ', ng)
         
         # save all parameters to numpy save file (.npz) 
@@ -459,11 +480,11 @@ class coreSelection:
                     'dec':blob_info['dec'][good_indices], #deg
                     'peak_flux':blob_info['max_sig'][good_indices], # Jy / beam
                     'peak_sn':blob_info['max_sn'][good_indices],   
-                    'tot_flux':blob_info['sig'][good_indices],       # Jy / beam
+                    'tot_flux':blob_info['sig'][good_indices],       # Jy 
                     'tot_sn':blob_info['sn'][good_indices],
-                    'area':blob_info['area'][good_indices],     # deg 
+                    'area':blob_info['area'][good_indices],     # deg^2
                     'yso_count':blob_info['ycnt'][good_indices],
-                    'hparea':blob_info['hparea'][good_indices],  # deg
+                    'hparea':blob_info['hparea'][good_indices],  # deg^2
                     'hpra':blob_info['hpra'][good_indices],   # deg
                     'hpdec':blob_info['hpdec'][good_indices], # deg
                     'temp':temp[good_indices], # K 
@@ -480,7 +501,6 @@ class coreSelection:
         good_cores_final.to_csv(self.outbase+'/final_core_selection.csv', index=False)
         
         return
-
 
     def plot_ratio(self, instrument, sim=False, good_indices=None, goodmap=None, logSN=None, ratio=None):
         '''
@@ -509,9 +529,20 @@ class coreSelection:
         
         # create figure
         plt.figure()
-        xx,yy = np.mgrid[0:2:20j, -2:0.5:25j] 
-        x = np.linspace(0,2,20)
-        y = np.linspace(-2,0.5, 25)
+        # -- Sarah's implementation of 2D histogram; everything seems hardcoded
+        xx,yy = np.mgrid[0:2:20j, -2:0.5:25j]  # for xlim = 0, 1.9, xbins = 20  
+        x = np.linspace(0,2,20)                # for ylim = -2, 0.4, ybins = 25 
+        y = np.linspace(-2,0.5, 25)            
+
+        # AMANDA'S TEST, KEEP BINNING SAME AS SARAH'S, BUT CHANGE THE XLIM, YLIM
+        #xmin, xmax= 0, 2.5
+        #ymin, ymax = -2.0, 1.0
+        #xbins,ybins = 26, 31 # 20, 25
+        
+        #xx,yy = np.mgrid[0:2.5:26j, -2.0:1.0:31j]
+        #x = np.linspace(xmin,xmax,xbins)                
+        #y = np.linspace(ymin,ymax,ybins)            
+
         print('plotting comparison to Column density and CMF ')
 
         blob_info = self.restorePickleFile()
@@ -519,7 +550,8 @@ class coreSelection:
         if (good_indices is None) or (goodmap is None):
             good_indices, goodmap = self.runCoreSelection() 
         if (logSN is None) or (ratio is None):
-            tmp1, logSN, ratio = self.findNH2ratio(blob_info)
+            #tmp1, logSN, ratio = self.findNH2ratio(blob_info)
+            tmp1, logSN, ratio, SNbin, ratiobin = self.findNH2ratio(blob_info)
         
         w = blob_info['maskbit'] == 1
         
@@ -529,10 +561,16 @@ class coreSelection:
         # plot contour of good map -- everything outside is good
         plt.contour(x,y,goodmap.T, colors='k', levels=[0.5, 0.75, 0.9])
         plt.plot([np.log10(self.minsn), np.log10(self.minsn),2],[10, self.mincut, self.mincut], 'k--')
-        plt.xlim(.001,2)
-        plt.ylim(-1.7,0.5)
+        #plt.xlim(.001,2)
+        #plt.ylim(-1.7,0.5)
+
+        # -- AL change axes limits 
+        plt.xlim(0.001, 4)
+        plt.ylim(-1.7, 2)
+        
         if sim == True:
-            plt.ylabel('log {N(H$_2$ ; Sim) / N(H$_2$ ; Sim+AzTEC)}', size=13)
+            #plt.ylabel('log {N(H$_2$ ; Sim) / N(H$_2$ ; Sim+AzTEC)}', size=13)
+            plt.ylabel('log {N(H$_2$ ; Sim) / N(H$_2$ ; Sim+TolTEC)}', size=13)
         else:
             plt.ylabel(f'log [N(H$_2$ ; Herschel) / N(H$_2$ ; {instrument}]', size=13)
         plt.xlabel('log S/N', size=13)

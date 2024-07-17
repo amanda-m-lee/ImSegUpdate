@@ -21,7 +21,7 @@ class getBlobs:
     nsigma = 5      # sigma cut for cores
     nmxsigma = 3.5  # max sigma cut for peak of cores
     areacut = -100  # area cut
-    covlim = 0.4  # coverage limit
+    covlim = 0.4    # coverage limit
     npixels = 10    # number of pixels touching to sbe considered a blob
     contrast=0.001  # fraction of the total source flux to that a local peak to be considered as a separate blob
     
@@ -114,15 +114,22 @@ class getBlobs:
         if weightPath != psfPath:
             psf         = fits.getdata(psfPath)
             cdelt2  = fits.getheader(weightPath)['CDELT2']       
-        else: # AL: TolTEC sim support
+        else: # AL edit for TolTEC: 
             hdu     = fits.open(psfPath)
-            psf     = hdu['kernel_I'].data # -- Yes it is Q: is kernel_I considered PSF of observation?
+            psf     = hdu['kernel_I'].data # -- AL: Did not rescale kernel since it is just for PSF calculation 
             if len(psf.shape)   != 2:      psf  = psf[0,0,:,:]
 
             cdelt2  = hdu['weight_I'].header['CDELT2']
 
         w       = np.where(psf > 0.5 * np.max(psf))
         nw      = len(w[0])
+        # AL: I think this formula is assuming a circular beam, with area of each pix
+        # as 1 arcsec^2 (i.e. cellsize=1'')
+        # nw is number of pix within the area of pixels that have values > 0.5
+        # number of pix * 1 arcsec^2 is just area in arcsec^2
+        # then, divide by pi, which gives you radius^2
+        # then, sqrt(radius^2)
+        # then, multiply by 2 to get the diameter of the region, and that's the FWHM 
         fwhm    = np.sqrt(nw / np.pi) * 2*cdelt2*3600. #arcsec
         print('FWHM calculated from psf in def FWHM() is:', fwhm)
         return fwhm
@@ -148,13 +155,17 @@ class getBlobs:
             insn    = fits.getdata(snPath)
             wt      = fits.getdata(weightPath)
             wcs_info= WCS(hdr)
-        else: # --AL: for TolTEC sim support 
+        else: # --AL: edit for TolTEC
             hdu     = fits.open(signalPath)
-            insig   = hdu['signal_I'].data
-            hdr     = hdu['signal_I'].header
-            insn    = hdu['sig2noise_I'].data
-            wt      = hdu['weight_I'].data
+            # AL: All of the ImSeg calculations assume the maps are in Jy/beam
+            # Need to rescale the map units to Jy/beam
+            # Here, assume that TolTEC maps are in mJy/beam 
+            insig   = hdu['signal_I'].data * 1E-3 #mJy/beam --> Jy/beam
+            hdr     = hdu['signal_I'].header                
+            insn    = hdu['sig2noise_I'].data 
+            wt      = hdu['weight_I'].data * 1E6 # 1/(mJy/beam)^2 --> 1/(Jy/beam)^2
             wcs_info = WCS(hdr).sub(2)
+            print(wcs_info)
             hdu.close()
 
         # --AL: for TolTEC sim support
@@ -223,21 +234,38 @@ class getBlobs:
         clumps = self.setup_ImSeg()
 
         t1 = time.time()
+
         #get an object class and array of blobs
+
         fin_obj, fin = clumps.deblendSources(sn_thresh,self.covlim, self.npixels, self.contrast)
         t2 = time.time()
         print(f'finished segmenting in : {t2-t1} sec')
         
         #open up header and WCS information to save blob ID image to fits
-        hdr = fits.getheader(self.weight)
+
+        #AL: TolTEC sim support 
+        hdu = fits.open(self.weight)
+        hdr = hdu['weight_I'].header 
+        
+        print(WCS(hdr))
         
         #plot the blobs and write blob ID image to fits file
         if plot_blobs:
-            outline_data = clumps.plotClumps(fin, self.name, self.outbase)
-            fits.writeto(self.outbase + '/' + self.name + '_blobprints.fits', outline_data, hdr, overwrite=True)  
+            outline_data, segmentation_image, outline_image  = clumps.plotClumps(fin, self.name, self.outbase)
+            fits.writeto(self.outbase + '/' + self.name + '_blobprints.fits', outline_data, hdr, overwrite=True)
+
+            # -- amanda added 240418 
+            fits.writeto(self.outbase + '/' + self.name + '_segmentation.fits', segmentation_image, hdr, overwrite=True)
+
+            fits.writeto(self.outbase + '/' + self.name + '_outline.fits', outline_image, hdr, overwrite=True)
+            
             
             print(f'saved bloblist fits to: {self.outbase}/{self.name}_blobprints.fits')
 
+            # -- amanda added 240418
+            print(f'saved segmentation fits to: {self.outbase}/{self.name}_segmentationimage.fits')
+
+            print(f'saved outline fits to: {self.outbase}/{self.name}_outlineimage.fits')
         
         if hasattr(self, 'temp'):
             if self.temp_hdr is None:
@@ -289,25 +317,10 @@ class getBlobs:
         if fin is None:
             clumps, fin_obj, fin = self.run_ImSeg(sn_thresh)
             
-        wcs = WCS(self.weight)
-
-    
-        ## AL check 
-        ##print(np.unique(fin)) # -- just assigns an index for each blob (each has val as id)
-                              # -- e.g., [0, 1, 2, ..., 561] for field09
-        ## AL check 
-        ##print(fin[0], fin[1])
-
-
-
+        # wcs = WCS(self.weight)
+        wcs = WCS(self.weight).sub(2)
         
-        ncores = np.unique(fin)[1::]  # takes elements from index 1 to end, so [1... 561]
-
-
-        ## AL check 
-        ##print('ncores is:', ncores)
-        ##print('length of ncores:', len(ncores))
-
+        ncores = np.unique(fin)[1::]  
 
         sz = np.shape(fin)
         
@@ -318,27 +331,19 @@ class getBlobs:
                 #find x and y pixel coords of yso ra and dec
                 x1, y1 = wcs.wcs_world2pix(ysoradec[:,0], ysoradec[:,1], 0)
 
-#                print(x1) 
-#                print(y1)
-
-#                print(y1[y1>0]) # why are these all negative? -was reading in SESNA catalog wrong. 
-                
                 #determine if they are within the bounds of our image
                 w1 = np.where((x1 >= 0) & (x1 <= sz[1] - 1)&(y1 >= 0) &(y1 <= sz[0]-1))
                 n1 = len(w1[0])
                 
+                # Amanda check 
+                #print('fin is:', fin) # this would be deblended map, 0 for background
+                #plt.title('Deblended image')
+                #plt.imshow(fin, origin = 'lower') # looks like values are blobid's 
+                #plt.plot(x1[w1],y1[w1], "r.", markersize=10, label='YSOs')
+                #plt.legend(loc='upper left')
+                #plt.show()
+
                 #if they are within the bounds of image determine their location on flattened fin image 
-
-                #-- AL personal check
-                '''
-                print('fin is:', fin) # this would be deblended map, 0 for background
-                plt.title('Deblended image')
-                plt.imshow(fin, origin = 'lower') # looks like values are blobid's 
-                plt.plot(x1[w1],y1[w1], "r.", markersize=0.4, label='YSOs')
-                plt.legend(loc='upper left')
-                plt.show()
-                ''' 
-
                 if n1 > 0:                   
                     yy1 = np.int_(y1[w1]+ 0.5)
                     xx1 = np.int_(x1[w1] + 0.5)
